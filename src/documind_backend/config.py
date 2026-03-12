@@ -24,8 +24,11 @@ class Settings(BaseSettings):
     langchain_api_key: str = ""
     langchain_project: str = "documind"
 
-    # --- Cohere Re-ranking ---
-    cohere_api_key: str = ""
+    # --- Retrieval tuning ---
+    retrieval_top_k: int = 10         # fetch top 10 before re-ranking
+    rerank_top_n: int = 3             # keep top 3 after re-ranking
+    confidence_threshold: float = 0.3 # drop chunks below this score
+    use_reranking: bool = True        # set False to skip re-ranking entirely
 
     # --- Storage Paths ---
     chroma_persist_dir: str = "./chroma_db"
