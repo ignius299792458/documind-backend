@@ -82,6 +82,7 @@ logger = logging.getLogger(__name__)
 # Public API — the only function most callers need
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def build_retriever(
     doc_ids: list[str] | None = None,
     use_reranking: bool = True,
@@ -131,8 +132,7 @@ def build_retriever(
     if sparse_retriever is None:
         # No documents in the store yet — fall back to dense-only
         logger.warning(
-            "[retrievers] No documents found for BM25 index — "
-            "using dense-only retrieval"
+            "[retrievers] No documents found for BM25 index — " "using dense-only retrieval"
         )
         base_retriever = dense_retriever
     else:
@@ -146,8 +146,7 @@ def build_retriever(
 
     if use_reranking and not settings.cohere_api_key:
         logger.info(
-            "[retrievers] Re-ranking requested but COHERE_API_KEY not set — "
-            "skipping re-ranking"
+            "[retrievers] Re-ranking requested but COHERE_API_KEY not set — " "skipping re-ranking"
         )
 
     return base_retriever
@@ -156,6 +155,7 @@ def build_retriever(
 # ══════════════════════════════════════════════════════════════════════════════
 # Layer builders (private)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def _build_chroma_filter(doc_ids: list[str] | None) -> dict | None:
     """
@@ -225,7 +225,7 @@ def _build_sparse_retriever(doc_ids: list[str] | None) -> BM25Retriever | None:
         BM25Retriever instance, or None if no documents are stored yet.
     """
     vectorstore = get_vectorstore()
-    collection  = vectorstore._collection
+    collection = vectorstore._collection
 
     # Fetch texts + metadata from Chroma (no vectors needed)
     where_filter = _build_chroma_filter(doc_ids)
@@ -235,17 +235,14 @@ def _build_sparse_retriever(doc_ids: list[str] | None) -> BM25Retriever | None:
 
     results = collection.get(**fetch_kwargs)
 
-    texts     = results.get("documents") or []
+    texts = results.get("documents") or []
     metadatas = results.get("metadatas") or []
 
     if not texts:
         return None  # collection is empty — caller handles this
 
     # Reconstruct LangChain Documents from raw Chroma data
-    docs = [
-        Document(page_content=text, metadata=meta)
-        for text, meta in zip(texts, metadatas)
-    ]
+    docs = [Document(page_content=text, metadata=meta) for text, meta in zip(texts, metadatas)]
 
     logger.debug(f"[retrievers] BM25 index built from {len(docs)} chunks")
 
@@ -283,7 +280,7 @@ def _build_ensemble_retriever(
     """
     return EnsembleRetriever(
         retrievers=[dense, sparse],
-        weights=[0.6, 0.4],   # must sum to 1.0
+        weights=[0.6, 0.4],  # must sum to 1.0
     )
 
 
@@ -332,6 +329,7 @@ def _wrap_with_reranker(base_retriever: BaseRetriever) -> ContextualCompressionR
 # ══════════════════════════════════════════════════════════════════════════════
 # Confidence filtering
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def filter_by_confidence(
     docs: list[Document],
@@ -406,6 +404,7 @@ def filter_by_confidence(
 # Utility — used by tests and the agent's planning step
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def retrieve_raw(
     question: str,
     doc_ids: list[str] | None = None,
@@ -432,7 +431,6 @@ def retrieve_raw(
     docs = retriever.invoke(question)
 
     logger.info(
-        f"[retrievers] retrieve_raw → {len(docs)} chunks "
-        f"for question='{question[:60]}...'"
+        f"[retrievers] retrieve_raw → {len(docs)} chunks " f"for question='{question[:60]}...'"
     )
     return docs

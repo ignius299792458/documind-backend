@@ -4,7 +4,7 @@ poetry add fastapi uvicorn[standard]
 
 ## LangChain ecosystem
 
-poetry add langchain langchain-core langchain-community langchain-openai
+poetry add langchain langchain-core langchain-community langchain-ollama
 poetry add langgraph langsmith
 
 ### Document loaders
@@ -13,7 +13,7 @@ poetry add pypdf python-docx unstructured[pdf]
 
 #### Vector store + embeddings
 
-poetry add chromadb openai tiktoken
+poetry add chromadb ollama tiktoken
 
 ## Text splitting
 

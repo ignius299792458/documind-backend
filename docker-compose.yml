@@ -62,12 +62,12 @@ services:
     #           count: 1
     #           capabilities: [gpu]
 
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s # give Ollama time to start before health checks begin
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 5
+    #   start_period: 30s # give Ollama time to start before health checks begin
 
     networks:
       - documind-net
@@ -87,9 +87,9 @@ services:
       - ollama-data:/root/.ollama # same volume as ollama service
 
     # Wait for Ollama to be healthy, then pull models
-    depends_on:
-      ollama:
-        condition: service_healthy
+    # depends_on:
+    #   ollama:
+    #     condition: service_healthy
 
     # Pull both models needed by DocuMind:
     #   llama3.2        → chat model (answering questions)
@@ -134,7 +134,11 @@ services:
       - ANONYMIZED_TELEMETRY=FALSE # disable Chroma telemetry
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      test:
+        [
+          "CMD-SHELL",
+          "curl -f http://localhost:8001/api/v2/heartbeat || exit 1",
+        ]
       interval: 20s
       timeout: 5s
       retries: 3
@@ -174,7 +178,7 @@ services:
       CHROMA_PORT: 8000
 
       # ── App config ───────────────────────────────────────
-      APP_ENV: ${APP_ENV:-production} # "development" or "production"
+      APP_ENV: ${APP_ENV:-development} # "development" or "production"
       ALLOWED_ORIGINS: http://localhost:3000
 
       # ── Optional: LangSmith tracing ──────────────────────
@@ -185,7 +189,7 @@ services:
 
     command: >
       sh -c '
-        if [ "$APP_ENV" = "dev" ]; then
+        if [ "$APP_ENV" = "development" ]; then
           uvicorn documind_backend.main:app --host 0.0.0.0 --port 8000 --reload --workers 1 --log-level debug
         else
           uvicorn documind_backend.main:app --host 0.0.0.0 --port 8000 --workers 2 --log-level info

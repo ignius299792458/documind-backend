@@ -14,10 +14,10 @@ class Settings(BaseSettings):
     pydantic-settings automatically reads .env and validates types.
     """
 
-    # --- OpenAI ---
-    openai_api_key: str
-    openai_embedding_model: str = "text-embedding-3-small"
-    openai_chat_model: str = "gpt-4o-mini"
+    # --- ollama ---
+    ollama_embedding_model: str = "nomic-embed-text:latest"
+    ollama_chat_model: str = "llama3.2:latest"
+    ollama_base_url: str = "http://localhost:11434"
 
     # --- LangSmith Observability ---
     langchain_tracing_v2: bool = True

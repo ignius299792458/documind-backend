@@ -1,41 +1,39 @@
 """
 core/retrieval/vectorstore.py
 ------------------------------
-Manages the ChromaDB vector store — the persistent database that stores
+Manages the ChromaDB vector store — the persistent database storing
 document chunks as high-dimensional embedding vectors.
 
 WHAT THIS MODULE OWNS:
   - Creating / connecting to the ChromaDB collection
-  - Embedding model setup (OpenAI)
+  - Embedding model setup (Ollama)
   - Writing chunks to ChromaDB  (add_chunks_to_vectorstore)
   - Deleting chunks by doc_id   (remove_document)
   - Reading chunk counts        (get_chunk_count)
   - Listing stored documents    (list_documents)
 
 WHAT THIS MODULE DOES NOT OWN:
-  - Retrieval logic (that lives in retrievers.py)
+  - Retrieval logic (retrievers.py)
   - Chunking (splitters.py)
   - Loading files (loaders.py)
 
-HOW VECTOR SEARCH WORKS IN ONE PARAGRAPH:
-  At ingest time every chunk of text is passed to an embedding model
-  (OpenAI text-embedding-3-small) which returns a list of 1,536 floats —
-  a point in 1,536-dimensional space. Semantically similar text lands
-  near the same region of that space. ChromaDB stores those points on disk
-  along with the original text and metadata. At query time the user's
-  question is embedded the same way, and ChromaDB finds the N stored
-  points whose vectors are closest (cosine similarity). Those are the
-  "most relevant" chunks.
+HOW VECTOR SEARCH WORKS:
+  At ingest time, each chunk is passed to an Ollama embedding model
+  (nomic-embed-text:latest), which returns a vector in high-dimensional space.
+  Semantically similar text maps near each other. ChromaDB stores these vectors
+  with original text and metadata. At query time, the user's question is embedded
+  the same way, and ChromaDB returns the N closest vectors (cosine similarity),
+  representing the most relevant chunks.
 
 SINGLETON PATTERN:
-  Both the embedding model and the vectorstore are created once via
-  @lru_cache and reused across every request. Creating them per-request
-  would be slow (OpenAI client init + disk I/O) and waste memory.
+  Both the embedding client and the vectorstore are created once via
+  @lru_cache and reused across requests. Recreating them per request would
+  be slow (Ollama client init + disk I/O) and waste memory.
 
 CHROMADB PERSISTENCE:
   ChromaDB writes a SQLite database + binary HNSW index files to
   settings.chroma_persist_dir (default: ./chroma_db).
-  On restart the existing index is loaded — no re-embedding needed.
+  On restart, the existing index is loaded — no re-embedding needed.
 """
 
 import logging
@@ -43,7 +41,7 @@ from functools import lru_cache
 from typing import Any
 
 from langchain_chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
 
 from documind_backend.config import settings
@@ -55,43 +53,42 @@ logger = logging.getLogger(__name__)
 # Embedding model
 # ══════════════════════════════════════════════════════════════════════════════
 
-@lru_cache(maxsize=1)
-def get_embedding_model() -> OpenAIEmbeddings:
-    """
-    Return a cached OpenAI embeddings client.
 
-    MODELS COMPARISON:
-    ┌──────────────────────────┬────────────┬──────────────────┬────────────┐
-    │ Model                    │ Dimensions │ Cost/1M tokens   │ Quality    │
-    ├──────────────────────────┼────────────┼──────────────────┼────────────┤
-    │ text-embedding-3-small   │ 1,536      │ $0.02            │ Good       │
-    │ text-embedding-3-large   │ 3,072      │ $0.13            │ Best       │
-    │ text-embedding-ada-002   │ 1,536      │ $0.10            │ Legacy     │
-    └──────────────────────────┴────────────┴──────────────────┴────────────┘
+@lru_cache(maxsize=1)
+def get_embedding_model() -> OllamaEmbeddings:
+    """
+    Return a cached Ollama embeddings client.
+
+    MODEL DETAILS:
+    ┌───────────────────────────────┬────────────┬──────────────────┬────────────┐
+    │ Model                         │ Dimensions │ Notes            │ Quality    │
+    ├───────────────────────────────┼────────────┼──────────────────┼────────────┤
+    │ nomic-embed-text:latest        │ 3,072      │ High-quality     │ Good       │
+    │ (other Ollama embedding models │ ...        │ ...              │ ...        │
+    │ can be used similarly)         │            │                  │            │
+    └───────────────────────────────┴────────────┴──────────────────┴────────────┘
 
     Recommendation:
-      - text-embedding-3-small  for cost-sensitive / high-volume use cases
-      - text-embedding-3-large  when retrieval accuracy is the top priority
+    - Use `nomic-embed-text:latest` for most cases.
+    - If Ollama releases other embedding models, pick based on
+        trade-off between vector dimensions and retrieval accuracy.
 
-    Configured via EMBEDDING_MODEL in .env (default: text-embedding-3-small).
+    Configured via `EMBEDDING_MODEL` in `.env` (default: `nomic-embed-text:latest`).
 
-    NOTE: If you change the embedding model AFTER documents are already
-    ingested, those chunks have 3-small vectors but new chunks get 3-large
-    vectors — they live in incompatible spaces and similarity search breaks.
-    Always re-ingest all documents after changing the embedding model.
+    NOTE: Changing the embedding model after documents are ingested
+    produces vectors in a different space. Similarity search will break.
+    Always re-ingest all documents if you change the model.
     """
-    logger.info(f"[vectorstore] Initializing embedding model: {settings.openai_embedding_model}")
-    return OpenAIEmbeddings(
-        model=settings.openai_embedding_model,
-        openai_api_key=settings.openai_api_key,
-        # Retry on transient OpenAI errors (rate limits, timeouts)
-        max_retries=3,
+    logger.info(f"[vectorstore] Initializing embedding model: {settings.ollama_embedding_model}")
+    return OllamaEmbeddings(
+        model=settings.ollama_embedding_model, base_url=settings.ollama_base_url
     )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ChromaDB vectorstore
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @lru_cache(maxsize=1)
 def get_vectorstore() -> Chroma:
@@ -133,24 +130,21 @@ def get_vectorstore() -> Chroma:
 # Write operations
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 def add_chunks_to_vectorstore(chunks: list[Document]) -> list[str]:
     """
-    Embed a list of text chunks and persist them in ChromaDB.
+    Embed a list of text chunks using Ollama and persist them in ChromaDB.
 
     Called once per document during the ingestion pipeline, after
     splitters.split_documents() produces the final chunk list.
 
     WHAT HAPPENS INTERNALLY:
-      1. For each chunk, calls OpenAI Embeddings API to get a 1536-dim vector.
+      1. For each chunk, calls the Ollama embedding model (nomic-embed-text:latest)
+         via HTTP API to get a vector representation.
          This is batched automatically — one API call per ~2048 chunks.
       2. Stores (vector, page_content, metadata, auto-generated-id) in Chroma.
       3. Chroma persists to disk immediately (no explicit .persist() needed
          in Chroma >= 0.4.x).
-
-    COST ESTIMATE:
-      text-embedding-3-small: $0.02 per 1M tokens
-      A typical 20-page PDF ≈ 100 chunks ≈ ~15,000 tokens ≈ $0.0003
-      A 200-page PDF ≈ 1,000 chunks ≈ ~150,000 tokens ≈ $0.003
 
     Args:
         chunks: Output of splitters.split_documents(). Each Document must
@@ -162,18 +156,17 @@ def add_chunks_to_vectorstore(chunks: list[Document]) -> list[str]:
         (For full document deletion, use remove_document(doc_id) instead.)
 
     Raises:
-        RuntimeError: If the embedding API call fails after retries.
+        RuntimeError: If the Ollama embedding API call fails after retries.
     """
     if not chunks:
         logger.warning("[vectorstore] add_chunks_to_vectorstore called with empty list")
         return []
 
-    doc_id   = chunks[0].metadata.get("doc_id", "unknown")
+    doc_id = chunks[0].metadata.get("doc_id", "unknown")
     filename = chunks[0].metadata.get("filename", "unknown")
 
     logger.info(
-        f"[vectorstore] Embedding {len(chunks)} chunks | "
-        f"doc_id={doc_id} | file='{filename}'"
+        f"[vectorstore] Embedding {len(chunks)} chunks | " f"doc_id={doc_id} | file='{filename}'"
     )
 
     vectorstore = get_vectorstore()
@@ -183,19 +176,16 @@ def add_chunks_to_vectorstore(chunks: list[Document]) -> list[str]:
         # Returns a list of auto-generated UUIDs (one per chunk).
         ids = vectorstore.add_documents(chunks)
     except Exception as exc:
-        raise RuntimeError(
-            f"Failed to embed/store chunks for '{filename}': {exc}"
-        ) from exc
+        raise RuntimeError(f"Failed to embed/store chunks for '{filename}': {exc}") from exc
 
-    logger.info(
-        f"[vectorstore] Stored {len(ids)} chunks for doc_id={doc_id}"
-    )
+    logger.info(f"[vectorstore] Stored {len(ids)} chunks for doc_id={doc_id}")
     return ids
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Delete operations
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def remove_document(doc_id: str) -> int:
     """
@@ -217,12 +207,12 @@ def remove_document(doc_id: str) -> int:
         ValueError: If no chunks are found for the given doc_id.
     """
     vectorstore = get_vectorstore()
-    collection  = vectorstore._collection   # access raw ChromaDB collection
+    collection = vectorstore._collection  # access raw ChromaDB collection
 
     # Fetch all chunk IDs for this document (no content needed, just IDs)
     results = collection.get(
         where={"doc_id": doc_id},
-        include=[],   # empty list = return only IDs, no content/vectors
+        include=[],  # empty list = return only IDs, no content/vectors
     )
 
     chunk_ids = results.get("ids", [])
@@ -236,15 +226,14 @@ def remove_document(doc_id: str) -> int:
     # Delete all chunks for this document in one call
     collection.delete(ids=chunk_ids)
 
-    logger.info(
-        f"[vectorstore] Deleted {len(chunk_ids)} chunks for doc_id={doc_id}"
-    )
+    logger.info(f"[vectorstore] Deleted {len(chunk_ids)} chunks for doc_id={doc_id}")
     return len(chunk_ids)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Read / inspection operations
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def get_chunk_count(doc_id: str | None = None) -> int:
     """
@@ -262,12 +251,12 @@ def get_chunk_count(doc_id: str | None = None) -> int:
         >>> get_chunk_count("uuid-123")     # chunks for one doc, e.g. 63
     """
     vectorstore = get_vectorstore()
-    collection  = vectorstore._collection
+    collection = vectorstore._collection
 
     if doc_id:
         results = collection.get(
             where={"doc_id": doc_id},
-            include=[],   # IDs only — fastest query
+            include=[],  # IDs only — fastest query
         )
         return len(results.get("ids", []))
 
@@ -301,7 +290,7 @@ def list_documents() -> list[dict[str, Any]]:
     and use this only as a fallback.
     """
     vectorstore = get_vectorstore()
-    collection  = vectorstore._collection
+    collection = vectorstore._collection
 
     # Fetch all stored metadata (no vectors or text needed)
     results = collection.get(include=["metadatas"])
@@ -324,19 +313,21 @@ def list_documents() -> list[dict[str, Any]]:
         # First time we see this doc_id → record its metadata
         if doc_id not in seen:
             seen[doc_id] = {
-                "doc_id":      doc_id,
-                "filename":    meta.get("filename",    "unknown"),
-                "file_type":   meta.get("file_type",   "unknown"),
+                "doc_id": doc_id,
+                "filename": meta.get("filename", "unknown"),
+                "file_type": meta.get("file_type", "unknown"),
                 "total_pages": meta.get("total_pages", None),
             }
 
     # Merge chunk counts into each document summary
     documents = []
     for doc_id, doc_meta in seen.items():
-        documents.append({
-            **doc_meta,
-            "chunk_count": chunk_counts.get(doc_id, 0),
-        })
+        documents.append(
+            {
+                **doc_meta,
+                "chunk_count": chunk_counts.get(doc_id, 0),
+            }
+        )
 
     # Sort alphabetically by filename for consistent UI ordering
     documents.sort(key=lambda d: d["filename"].lower())
@@ -362,11 +353,11 @@ def document_exists(doc_id: str) -> bool:
         True if at least one chunk exists for this doc_id, False otherwise.
     """
     vectorstore = get_vectorstore()
-    collection  = vectorstore._collection
+    collection = vectorstore._collection
 
     results = collection.get(
         where={"doc_id": doc_id},
-        limit=1,       # stop after finding the first match
-        include=[],    # IDs only
+        limit=1,  # stop after finding the first match
+        include=[],  # IDs only
     )
     return len(results.get("ids", [])) > 0

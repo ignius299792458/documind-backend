@@ -1,56 +1,47 @@
 """
 core/ingestion/splitters.py
 ----------------------------
-Breaks large Documents into smaller chunks ready for embedding.
+Breaks large Documents into smaller chunks ready for embedding with Ollama.
 
 RESPONSIBILITY OF THIS MODULE:
     List[Document] (pages)  →  List[Document] (chunks)
 
 WHY CHUNKING IS NECESSARY:
     1. Embedding model token limits
-       OpenAI's text-embedding-3-small accepts max ~8,191 tokens per call.
-       A 20-page PDF is ~10,000 tokens — it must be split.
+       Ollama's embedding models accept a maximum token limit per call.
+       A 20-page PDF may exceed this limit — it must be split.
 
     2. Retrieval precision
-       If you embed an entire document as one vector, a question about
-       page 14 competes against all other content in the embedding.
-       Smaller chunks have more focused embeddings → better similarity scores.
+       Embedding an entire document as one vector reduces focus.
+       Smaller chunks produce more precise embeddings → better similarity scores.
 
     3. Context window management
-       You can't inject an entire 50-page PDF into the LLM prompt.
-       After retrieval you inject only the 3-5 most relevant chunks.
+       LLM prompts cannot hold entire long documents.
+       After retrieval, only the top 3-5 relevant chunks are injected.
 
 CHUNK SIZE TRADEOFFS:
     Smaller chunks (200-500 chars):
-        + More precise retrieval (very focused embeddings)
-        - Lose surrounding context (a sentence without its paragraph is ambiguous)
+        + Very focused embeddings
+        - Lose surrounding context
 
     Larger chunks (1500-2000 chars):
-        + Rich context in each chunk
-        - Less precise embeddings (one vector = many topics mixed together)
+        + Richer context per chunk
+        - Mixed-topic embeddings
 
     Sweet spot: 800-1200 chars with 150-250 overlap.
-    DocuMind defaults: chunk_size=1000, chunk_overlap=200 (set in config.py).
+    DocuMind defaults: chunk_size=1000, chunk_overlap=200 (configurable in config.py).
 
 OVERLAP EXPLAINED:
-    chunk_overlap=200 means the last 200 characters of chunk N are repeated
-    as the first 200 characters of chunk N+1.
-
-    Without overlap:                With overlap (200 chars):
-    [......chunk 1......|          [.......chunk 1.......|
-                        |.....chunk 2......]              |--overlap--|.....chunk 2......]
-
-    If a sentence spans the boundary of two chunks, overlap ensures it
-    appears fully in at least one of them.
+    chunk_overlap=200 repeats the last 200 characters of chunk N
+    as the first 200 characters of chunk N+1, preserving sentences across boundaries.
 
 STRATEGY BY FILE TYPE:
     .pdf, .docx, .txt, .html → RecursiveCharacterTextSplitter
-        Tries paragraph → sentence → word → character (in that order).
-        Preserves as much semantic coherence as possible.
+        Splits paragraphs → sentences → words → characters, preserving semantic coherence.
 
-    .md → MarkdownHeaderTextSplitter (stage 1) + RecursiveCharacter (stage 2)
-        Stage 1 splits on # headers, injecting header hierarchy into metadata.
-        Stage 2 handles sections that are still too long after header splitting.
+    .md → MarkdownHeaderTextSplitter (stage 1) + RecursiveCharacterTextSplitter (stage 2)
+        Stage 1 splits on headers, injecting hierarchy into metadata.
+        Stage 2 handles sections still too long after header splitting.
 """
 
 import logging
