@@ -40,6 +40,7 @@ import logging
 from functools import lru_cache
 from typing import Any
 
+import chromadb
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
@@ -92,37 +93,21 @@ def get_embedding_model() -> OllamaEmbeddings:
 
 @lru_cache(maxsize=1)
 def get_vectorstore() -> Chroma:
-    """
-    Return a cached Chroma vectorstore connected to the persistent collection.
-
-    CHROMA INTERNALS (simplified):
-      - Uses HNSW (Hierarchical Navigable Small World) for approximate
-        nearest-neighbor search. Fast and memory-efficient.
-      - Metadata filters use DuckDB under the hood — fast SQL-like filtering.
-      - The persist_directory holds:
-          chroma.sqlite3          ← document metadata + metadata index
-          <collection-uuid>/      ← HNSW binary index files
-
-    COLLECTION NAMING:
-      All DocuMind documents share one collection (documind_docs).
-      Per-document isolation is achieved via metadata filtering:
-          {"doc_id": "uuid-123"}
-      This is simpler than one-collection-per-document and lets us
-      do cross-document search without any extra setup.
-    """
     logger.info(
-        f"[vectorstore] Connecting to ChromaDB | "
-        f"path='{settings.chroma_persist_dir}' | "
+        f"[vectorstore] Connecting to ChromaDB HTTP server | "
+        f"host={settings.chroma_host}:{settings.chroma_port} | "
         f"collection='{settings.chroma_collection_name}'"
     )
+    http_client = chromadb.HttpClient(
+        host=settings.chroma_host,
+        port=settings.chroma_port,
+    )
     return Chroma(
+        client=http_client,
         collection_name=settings.chroma_collection_name,
         embedding_function=get_embedding_model(),
-        persist_directory=settings.chroma_persist_dir,
-        # collection_metadata sets index-level settings.
-        # hnsw:space=cosine → use cosine similarity (standard for text).
-        # Other options: "l2" (Euclidean), "ip" (inner product).
         collection_metadata={"hnsw:space": "cosine"},
+        # No persist_directory — HTTP mode, server handles persistence
     )
 
 

@@ -82,7 +82,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Chat model:   {settings.ollama_chat_model}")
     logger.info(f"  Embed model:  {settings.ollama_embedding_model}")
     logger.info(f"  Ollama URL:   {settings.ollama_base_url}")
-    logger.info(f"  ChromaDB:     {settings.chroma_persist_dir}")
+    logger.info(
+        f"  ChromaDB:     {settings.chroma_host}:{settings.chroma_port} (HTTP: {settings.chroma_use_http})"
+    )
     logger.info(
         f"  Re-ranking:   {'enabled (FlashRank)' if settings.use_reranking else 'disabled'}"
     )

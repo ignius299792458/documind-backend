@@ -30,10 +30,12 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.3  # drop chunks below this score
     use_reranking: bool = True  # set False to skip re-ranking entirely
 
-    # --- Storage Paths ---
-    chroma_persist_dir: str = "./chroma_db"
+    # --- Chroma Storage Config ---
     upload_dir: str = "./uploads"
     chroma_collection_name: str = "documents_docs"
+    chroma_host: str = "127.0.0.1"
+    chroma_port: int = 8001
+    chroma_use_http: bool = True
 
     # --- App Behaviour ---
     app_env: str = "development"
