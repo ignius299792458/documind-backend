@@ -19,53 +19,70 @@ THREE-LAYER RETRIEVAL ARCHITECTURE:
                       "Find clause 4.2.1"  →  finds it even if semantically
                       it looks similar to every other clause.
 
-  Fusion (RRF):       EnsembleRetriever combines Dense + Sparse using
-                      Reciprocal Rank Fusion. A chunk that ranks #1 in Dense
-                      AND #3 in Sparse beats one that ranks #1 in only one.
+  Fusion (RRF):       EnsembleRetriever combines Dense + Sparse results using
+                      ----🤩 RRF: Reciprocal Rank Fusion---. 
+                      A chunk that ranks #1 in Dense AND #3 in Sparse beats 
+                      one that ranks #1 in only one.
                       Weights: [0.6 Dense, 0.4 Sparse] — tune to your corpus.
 
-  Layer 2 — RE-RANKING (optional, Cohere cross-encoder)
-  ─────────────────────────────────────────────────────
-  Takes the top-K fusion results and re-scores them by running a
-  cross-encoder model that reads (question + chunk) TOGETHER.
-  Bi-encoders (embeddings) encode question and chunk independently —
-  cross-encoders read them jointly and produce much more accurate scores.
-  Cost: one extra Cohere API call per query. Reduces top-K to top-N.
-  Skipped if COHERE_API_KEY is not set.
+  Layer 2 — RE-RANKING (FlashRank cross-encoder, fully local)
+  ─────────────────────────────────────────────────────────────
+  Takes the top-K fusion results and re-scores them with a cross-encoder
+  model (ms-marco-MiniLM-L-12-v2) that reads (question + chunk) TOGETHER.
+
+  WHY CROSS-ENCODER IS MORE ACCURATE THAN BI-ENCODER:
+    Bi-encoder (embeddings):
+      question → embed → q_vector
+      chunk    → embed → c_vector
+      score = cosine(q_vector, c_vector)
+      Question and chunk are encoded SEPARATELY — they never interact.
+
+    Cross-encoder (FlashRank):
+      [question + chunk] → transformer → relevance_score
+      The model reads BOTH together with full attention.
+      Every question word interacts with every chunk word.
+      Catches mismatches that embedding similarity misses.
+
+  FlashRank runs 100% locally — no API, no internet, no cost.
+  Model (~50MB) downloads once to ~/.cache/flashrank/ on first use.
 
   Layer 3 — CONFIDENCE FILTERING
   ─────────────────────────────────────────────────────
   Drops chunks whose relevance score falls below settings.confidence_threshold.
   If ALL chunks are filtered: the chain returns "I don't know" instead of
-  hallucinating an answer from irrelevant context. This is the anti-hallucination
-  safety valve.
+  hallucinating an answer from irrelevant context. Anti-hallucination gate.
 
-FULL PIPELINE VISUALIZED:
-  question
-     │
-     ├──────────────────────────┐
+FULL PIPELINE:
+              question
+                 │
+     |───────────├──────────────|
      ▼                          ▼
   Dense retriever           Sparse retriever
-  (Chroma cosine sim)       (BM25 keyword)
+  (Chroma + nomic-embed)    (BM25 keyword)
      │   top-K chunks           │   top-K chunks
      └──────────┬───────────────┘
                 ▼
           EnsembleRetriever
-          (RRF fusion → re-ranked combined list)
+          (RRF fusion → combined ranked list)
                 │
-                ▼ (if COHERE_API_KEY set)
-          CohereRerank
-          (cross-encoder → top-N most relevant)
+                ▼
+          FlashRank cross-encoder
+          (re-scores top-K → keeps top-N)
                 │
                 ▼
           confidence filter
-          (drop score < threshold)
+          (drops score < threshold)
                 │
                 ▼
           List[Document]  →  injected into prompt as context
+
+SETUP REQUIRED:
+  poetry add flashrank
+  No API keys needed. Everything runs on your local Ollama stack.
 """
 
 import logging
+
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_community.retrievers import BM25Retriever
@@ -82,7 +99,6 @@ logger = logging.getLogger(__name__)
 # Public API — the only function most callers need
 # ══════════════════════════════════════════════════════════════════════════════
 
-
 def build_retriever(
     doc_ids: list[str] | None = None,
     use_reranking: bool = True,
@@ -90,107 +106,98 @@ def build_retriever(
     """
     Build and return the full multi-layer retrieval pipeline.
 
-    This is the main entry point for retrieval. The rag_chain and agent
-    both call this to get a retriever scoped to the right documents.
+    Called by rag_chain.py and agent.py to get a retriever scoped
+    to the right documents. Returns a standard LangChain BaseRetriever
+    so callers never need to know which layers are active.
 
     Args:
-        doc_ids:       If provided, restrict search to ONLY these documents.
-                       Pass None to search across ALL ingested documents.
-                       Supports one document (exact match) or many ($in filter).
-        use_reranking: Apply Cohere cross-encoder re-ranking as a second pass.
-                       Requires COHERE_API_KEY in environment.
-                       Set False to reduce latency when accuracy is less critical.
+        doc_ids:       Restrict search to ONLY these document UUIDs.
+                       None = search across ALL ingested documents.
+        use_reranking: Apply FlashRank cross-encoder as a second pass.
+                       Set False for faster (but less precise) retrieval,
+                       e.g. during the agent's planning step where speed
+                       matters more than precision.
 
     Returns:
-        A LangChain BaseRetriever. All retrievers share the same interface:
-            docs = retriever.invoke("user question")
+        BaseRetriever — call with:
+            docs = retriever.invoke("your question")
             # → List[Document], sorted by relevance descending
 
-    Example:
-        >>> # Search all documents
+    Examples:
         >>> retriever = build_retriever()
-
-        >>> # Search only two specific documents
         >>> retriever = build_retriever(doc_ids=["uuid-1", "uuid-2"])
-
-        >>> # Fast retrieval without re-ranking (e.g. for the agent's planning step)
-        >>> retriever = build_retriever(use_reranking=False)
+        >>> retriever = build_retriever(use_reranking=False)  # faster
     """
-    # ── Build metadata filter for ChromaDB ───────────────────────────────────
-    # ChromaDB WHERE clause syntax:
-    #   Single doc:   {"doc_id": "uuid-123"}
-    #   Multiple docs: {"doc_id": {"$in": ["uuid-1", "uuid-2"]}}
-    #   No filter:    None  (search entire collection)
-    chroma_filter = _build_chroma_filter(doc_ids)
+    # ── Build ChromaDB metadata filter ───────────────────────────────────────
+    chroma_filter = _build_chroma_filter_query(doc_ids)
 
-    # ── Layer 1a: Dense retriever (ChromaDB vector search) ───────────────────
+    # ── Layer 1a: Dense retriever (ChromaDB + nomic-embed-text vectors) ──────
     dense_retriever = _build_dense_retriever(chroma_filter)
 
-    # ── Layer 1b: Sparse retriever (BM25 keyword search) ─────────────────────
+    # ── Layer 1b: Sparse retriever (BM25 keyword matching) ───────────────────
     sparse_retriever = _build_sparse_retriever(doc_ids)
 
     if sparse_retriever is None:
-        # No documents in the store yet — fall back to dense-only
+        # Collection is empty — no documents ingested yet.
+        # Fall back to dense-only so queries don't crash on empty DB.
         logger.warning(
-            "[retrievers] No documents found for BM25 index — " "using dense-only retrieval"
+            "[retrievers] ChromaDB collection is empty — "
+            "using dense-only retrieval (BM25 skipped)"
         )
         base_retriever = dense_retriever
     else:
         # ── Layer 1 fusion: EnsembleRetriever (RRF) ──────────────────────────
         base_retriever = _build_ensemble_retriever(dense_retriever, sparse_retriever)
 
-    # ── Layer 2: Re-ranking (optional) ───────────────────────────────────────
-    if use_reranking and settings.cohere_api_key:
-        logger.info("[retrievers] Re-ranking enabled (Cohere)")
-        return _wrap_with_reranker(base_retriever)
+    # ── Layer 2: FlashRank re-ranking (local cross-encoder) ──────────────────
+    # use_reranking arg AND settings.use_reranking must both be True.
+    # This lets callers override at call-site while still respecting
+    # the global config toggle.
+    if use_reranking and settings.use_reranking:
+        logger.info("[retrievers] Re-ranking enabled (FlashRank local cross-encoder)")
+        return _wrap_with_flashrank(base_retriever)
 
-    if use_reranking and not settings.cohere_api_key:
-        logger.info(
-            "[retrievers] Re-ranking requested but COHERE_API_KEY not set — " "skipping re-ranking"
-        )
-
+    logger.info("[retrievers] Re-ranking skipped")
     return base_retriever
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Layer builders (private)
+# Private layer builders
 # ══════════════════════════════════════════════════════════════════════════════
 
-
-def _build_chroma_filter(doc_ids: list[str] | None) -> dict | None:
+def _build_chroma_filter_query(doc_ids: list[str] | None) -> dict | None:
     """
-    Build the ChromaDB WHERE clause from a list of doc_ids.
+    Build ChromaDB WHERE clause from a list of doc_ids.
 
-    ChromaDB uses a MongoDB-style query syntax for metadata filtering.
-    Returns None when doc_ids is empty/None to search the full collection.
+    ChromaDB uses MongoDB-style metadata filter syntax:
+      Single doc:    {"doc_id": "uuid-123"}
+      Multiple docs: {"doc_id": {"$in": ["uuid-1", "uuid-2"]}}
+      No filter:     None  (searches entire collection)
     """
     if not doc_ids:
         return None
-
     if len(doc_ids) == 1:
-        # Simple equality — faster than $in for a single value
-        return {"doc_id": doc_ids[0]}
-
-    # $in operator: match any of the provided values
+        return {"doc_id": doc_ids[0]}          # equality is faster than $in
     return {"doc_id": {"$in": doc_ids}}
 
 
 def _build_dense_retriever(chroma_filter: dict | None) -> BaseRetriever:
     """
-    Build the dense (vector similarity) retriever from ChromaDB.
+    Build the dense (vector similarity) retriever.
 
-    search_type="similarity":
-        Standard cosine similarity search. Returns the top-k chunks
-        whose embedding vectors are closest to the query vector.
+    Uses nomic-embed-text vectors stored in ChromaDB.
+    At query time, the question is embedded with the same model
+    and ChromaDB finds the nearest vectors via cosine similarity.
 
-    search_type="mmr" (alternative):
-        Maximum Marginal Relevance. Trades off relevance vs. diversity —
-        avoids returning 5 nearly-identical chunks about the same sentence.
-        Use if you find retrieved chunks are too repetitive.
+    search_type options:
+      "similarity" — standard cosine similarity (default, recommended)
+      "mmr"        — Maximum Marginal Relevance: trades off relevance vs
+                     diversity to avoid returning 5 near-identical chunks.
+                     Useful if you find retrieved chunks are too repetitive.
 
-    k=settings.retrieval_top_k:
-        How many chunks to return. Default 5. More = more context for the
-        LLM but higher cost + more noise. Re-ranking reduces this to top-N.
+    k = settings.retrieval_top_k (default 10):
+      Fetch more than you'll use — re-ranking will shrink this to top 3.
+      More candidates = re-ranker has better material to work with.
     """
     vectorstore = get_vectorstore()
 
@@ -206,50 +213,53 @@ def _build_dense_retriever(chroma_filter: dict | None) -> BaseRetriever:
 
 def _build_sparse_retriever(doc_ids: list[str] | None) -> BM25Retriever | None:
     """
-    Build a BM25 sparse retriever from chunks currently in ChromaDB.
+    Build a BM25 keyword retriever from chunks stored in ChromaDB.
 
-    BM25 (Best Match 25) is a probabilistic keyword-ranking function.
-    It scores chunks by:
-      - Term Frequency (TF): how often the query term appears in the chunk
+    BM25 (Best Match 25) scores chunks by:
+      - Term Frequency (TF):  how often a query term appears in the chunk
       - Inverse Document Frequency (IDF): how rare the term is across all chunks
-        (rare terms are more informative)
-      - Document length normalization: penalizes very long chunks
+        (rare/specific terms score higher than common words)
+      - Length normalization: longer chunks don't get unfair advantage
 
-    WHY WE BUILD IT FROM CHROMA CONTENTS:
-    BM25Retriever needs the raw text of all documents to build its index.
-    We fetch the texts directly from ChromaDB so we don't need a second
-    storage layer. The BM25 index is rebuilt on every call — for production
-    with 10,000+ chunks, consider caching it and invalidating on new ingests.
+    WHY BM25 COMPLEMENTS DENSE RETRIEVAL:
+      Dense: "payment terms" → finds "30 days net" (semantic match)
+      BM25:  "clause 4.2.1"  → finds exact "4.2.1" (keyword match)
+      Together they cover both retrieval modes.
+
+    WHY WE REBUILD FROM CHROMA:
+      BM25 needs raw text to build its index. We fetch from ChromaDB
+      directly — no second storage needed. Tradeoff: rebuilds on every
+      query. For large corpora (10k+ chunks), cache this index and
+      invalidate it only when new documents are ingested.
 
     Returns:
-        BM25Retriever instance, or None if no documents are stored yet.
+        BM25Retriever, or None if no documents are in the collection yet.
     """
     vectorstore = get_vectorstore()
-    collection = vectorstore._collection
+    collection  = vectorstore._collection
 
-    # Fetch texts + metadata from Chroma (no vectors needed)
-    where_filter = _build_chroma_filter(doc_ids)
+    # Fetch all chunk texts + metadata (skip vectors — not needed for BM25)
+    where_filter = _build_chroma_filter_query(doc_ids)
     fetch_kwargs: dict = {"include": ["documents", "metadatas"]}
     if where_filter:
         fetch_kwargs["where"] = where_filter
 
-    results = collection.get(**fetch_kwargs)
-
-    texts = results.get("documents") or []
+    results   = collection.get(**fetch_kwargs)
+    texts     = results.get("documents") or []
     metadatas = results.get("metadatas") or []
 
     if not texts:
-        return None  # collection is empty — caller handles this
+        return None  # empty collection — caller handles gracefully
 
-    # Reconstruct LangChain Documents from raw Chroma data
-    docs = [Document(page_content=text, metadata=meta) for text, meta in zip(texts, metadatas)]
+    # Reconstruct LangChain Documents for BM25Retriever
+    docs = [
+        Document(page_content=text, metadata=meta)
+        for text, meta in zip(texts, metadatas)
+    ]
 
     logger.debug(f"[retrievers] BM25 index built from {len(docs)} chunks")
 
-    return BM25Retriever.from_documents(
-        docs,
-        k=settings.retrieval_top_k,
-    )
+    return BM25Retriever.from_documents(docs, k=settings.retrieval_top_k)
 
 
 def _build_ensemble_retriever(
@@ -257,67 +267,75 @@ def _build_ensemble_retriever(
     sparse: BM25Retriever,
 ) -> EnsembleRetriever:
     """
-    Combine dense and sparse retrievers using Reciprocal Rank Fusion (RRF).
+    Fuse dense + sparse results using Reciprocal Rank Fusion (RRF).
 
-    RRF ALGORITHM:
-    For each chunk, its score = Σ 1 / (rank_in_retriever_i + k)
-    where k=60 is a smoothing constant.
+    RRF SCORING FORMULA:
+      score(chunk) = Σ  1 / (rank_in_retriever_i + 60)
+                    i
 
-    Example (k=60):
-      Chunk A: rank #1 in Dense, rank #3 in Sparse
-        Score = 1/(1+60) + 1/(3+60) = 0.0164 + 0.0159 = 0.0323
+      k=60 is a smoothing constant (standard in IR literature).
 
-      Chunk B: rank #1 in Sparse only (not in Dense top-K)
-        Score = 0 + 1/(1+60) = 0.0164
+    EXAMPLE:
+      Chunk A → Dense rank #1, Sparse rank #3
+        score = 1/(1+60) + 1/(3+60) = 0.0164 + 0.0159 = 0.0323  ← wins
 
-    Chunk A wins because it appears in BOTH retrievers.
+      Chunk B → Dense rank #1 only (not in Sparse top-K)
+        score = 1/(1+60) + 0 = 0.0164
+
+    Chunk A wins because it appears in BOTH — RRF rewards agreement
+    between the two retrieval methods.
 
     WEIGHTS [0.6, 0.4]:
-    Dense gets 60% weight, Sparse gets 40%.
-    Tune based on your corpus:
-      - More keyword-heavy docs (legal, code) → increase sparse weight
-      - More semantic/conversational docs (reports, books) → increase dense weight
+      Dense 60%, Sparse 40% — good default for mixed document types.
+      Tune if needed:
+        Legal / code docs (keyword-heavy) → try [0.4, 0.6]
+        Reports / books (semantic)        → keep [0.6, 0.4] or higher
     """
     return EnsembleRetriever(
         retrievers=[dense, sparse],
-        weights=[0.6, 0.4],  # must sum to 1.0
+        weights=[0.6, 0.4],   # must sum to 1.0
     )
 
 
-def _wrap_with_reranker(base_retriever: BaseRetriever) -> ContextualCompressionRetriever:
+def _wrap_with_flashrank(base_retriever: BaseRetriever) -> ContextualCompressionRetriever:
     """
-    Wrap any retriever with Cohere's cross-encoder re-ranker.
+    Wrap the retriever with FlashRank local cross-encoder re-ranking.
 
-    HOW CROSS-ENCODING DIFFERS FROM BI-ENCODING:
-
-    Bi-encoder (what embeddings do):
-      question  →  [embed]  →  q_vector
-      chunk     →  [embed]  →  c_vector
-      score = cosine(q_vector, c_vector)
-      The question and chunk NEVER interact during scoring.
-
-    Cross-encoder (what Cohere Rerank does):
-      [question + chunk]  →  [transformer]  →  relevance_score
-      The model reads BOTH at the same time — full attention between
-      question tokens and chunk tokens. Far more accurate but can't be
-      pre-computed (must run at query time).
-
-    ContextualCompressionRetriever workflow:
+    WHAT FLASHRANK DOES:
       1. Calls base_retriever.invoke(question)  → top-K chunks (e.g. 10)
-      2. Sends all K (question, chunk) pairs to Cohere Rerank API
-      3. Cohere returns relevance_score for each pair
-      4. Keeps only top-N by score (settings.rerank_top_n, default 3)
+      2. For each chunk, scores the pair (question, chunk) together
+         using a small BERT-based cross-encoder model
+      3. Returns top-N chunks by cross-encoder score (e.g. top 3)
 
-    The final N chunks are higher-quality than the original K — less noise
-    injected into the prompt.
+    WHY LOCAL CROSS-ENCODER > EMBEDDING SIMILARITY:
+      Embeddings encode question and chunk independently — they can't
+      detect subtle mismatches. Cross-encoder reads both together:
+        Question: "What are payment terms?"
+        Chunk:    "The payment office is on the 3rd floor"
+        Embedding similarity: 0.79  (both contain "payment")
+        Cross-encoder score:  0.08  (correctly identifies mismatch)
+
+    FLASHRANK MODEL: ms-marco-MiniLM-L-12-v2
+      - Trained on MS MARCO passage ranking benchmark
+      - ~50MB download, cached at ~/.cache/flashrank/ after first run
+      - Runs on CPU — no GPU needed, works on your 8GB Mac
+      - Latency: ~50-150ms per query (negligible vs llama3.2 inference)
+
+    OTHER FLASHRANK MODEL OPTIONS (swap via model= parameter):
+      "ms-marco-TinyBERT-L-2-v2"  → faster (~20ms), smaller, less accurate
+      "ms-marco-MiniLM-L-12-v2"   → balanced (default, recommended)
+      "rank-T5-flan"               → most accurate, ~200MB, slower (~300ms)
+
+    IMPORTANT — ContextualCompressionRetriever workflow:
+      base_retriever fetches top-K (controlled by retrieval_top_k)
+      FlashRank re-scores and keeps top-N (controlled by rerank_top_n)
+      Only top-N chunks are passed downstream to the LLM prompt.
     """
-    from langchain_cohere import CohereRerank
+    from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 
-    compressor = CohereRerank(
-        cohere_api_key=settings.cohere_api_key,
-        top_n=settings.rerank_top_n,
-        model="rerank-english-v3.0",
-        # rerank-multilingual-v3.0  → use for non-English documents
+    compressor = FlashrankRerank(
+        top_n=settings.rerank_top_n,           # how many to keep (default 3)
+        model="ms-marco-MiniLM-L-12-v2",       # local cross-encoder model
     )
 
     return ContextualCompressionRetriever(
@@ -330,60 +348,61 @@ def _wrap_with_reranker(base_retriever: BaseRetriever) -> ContextualCompressionR
 # Confidence filtering
 # ══════════════════════════════════════════════════════════════════════════════
 
-
 def filter_by_confidence(
     docs: list[Document],
     threshold: float | None = None,
 ) -> tuple[list[Document], bool]:
     """
-    Remove chunks whose relevance score is below the confidence threshold.
+    Drop chunks whose relevance score falls below the confidence threshold.
 
-    This is the anti-hallucination gate. When the retriever finds no
-    relevant context (all chunks score below threshold), we return
-    has_relevant_context=False and the chain returns "I don't know"
-    rather than fabricating an answer.
+    This is the anti-hallucination gate. When retrieval finds no relevant
+    context, returning has_relevant_context=False tells the chain to reply
+    "I don't know" instead of generating a hallucinated answer.
 
-    RELEVANCE SCORES:
-    After Cohere re-ranking: scores are 0.0–1.0 (probability of relevance).
-    After embedding-only retrieval: scores are cosine distances (0.0–1.0).
-    For BM25-only: scores are BM25 term frequencies (not normalized to 0-1).
+    SCORE SOURCES:
+      After FlashRank re-ranking:
+        → 'relevance_score' in metadata, range 0.0–1.0
+        → 0.0 = irrelevant, 1.0 = perfectly relevant
+      After embedding-only (no re-ranking):
+        → No 'relevance_score' set by ChromaDB
+        → Default to 1.0 (pass all through — no filtering)
+      After BM25-only:
+        → BM25 scores are not normalized to 0–1
+        → Default to 1.0 (pass all through)
 
-    For chunks without a relevance_score in metadata (e.g. from BM25 only),
-    we default to 1.0 (pass through) — BM25 doesn't produce normalized scores.
+    THRESHOLD TUNING (settings.confidence_threshold, default 0.3):
+      0.1 → very permissive: more context injected, more noise risk
+      0.3 → balanced: good default for general document Q&A
+      0.5 → strict: clean context, may miss edge-case relevant chunks
+      0.7 → very strict: only extremely relevant chunks pass
 
     Args:
-        docs:      Retrieved documents. May have 'relevance_score' in metadata.
-        threshold: Minimum score to keep. Defaults to settings.confidence_threshold.
-                   Tune this:
-                     0.1 → very permissive (more context, more noise)
-                     0.5 → balanced
-                     0.7 → strict (less noise, might miss edge-case relevant chunks)
+        docs:      Retrieved documents (may have 'relevance_score' in metadata).
+        threshold: Override the default confidence threshold from settings.
 
     Returns:
-        Tuple of:
-          - filtered_docs: only chunks that passed the threshold
-          - has_relevant_context: False if ALL chunks were filtered out
+        (filtered_docs, has_relevant_context)
+        has_relevant_context = False when ALL chunks were filtered out.
 
     Example:
         >>> docs = retriever.invoke("What is the refund policy?")
         >>> filtered, has_context = filter_by_confidence(docs)
         >>> if not has_context:
-        ...     return "I don't have enough information to answer."
+        ...     return "I don't have enough information to answer this."
     """
     min_score = threshold if threshold is not None else settings.confidence_threshold
 
     filtered = []
     for doc in docs:
-        # Cohere Rerank injects 'relevance_score' into metadata.
-        # ChromaDB similarity search doesn't — so default to 1.0 (pass through).
+        # FlashRank injects 'relevance_score' into metadata after re-ranking.
+        # ChromaDB similarity search does not set this — default 1.0 passes through.
         score = float(doc.metadata.get("relevance_score", 1.0))
 
         if score >= min_score:
             filtered.append(doc)
         else:
             logger.debug(
-                f"[retrievers] Filtered chunk below threshold "
-                f"(score={score:.3f} < {min_score}) | "
+                f"[retrievers] Chunk filtered (score={score:.3f} < {min_score}) | "
                 f"file={doc.metadata.get('filename', '?')} | "
                 f"page={doc.metadata.get('page', '?')}"
             )
@@ -393,17 +412,15 @@ def filter_by_confidence(
     if not has_context:
         logger.info(
             f"[retrievers] All {len(docs)} chunks scored below "
-            f"confidence threshold ({min_score}). "
-            "Chain will return 'I don't know' response."
+            f"threshold ({min_score}) — chain will return 'I don't know'"
         )
 
     return filtered, has_context
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Utility — used by tests and the agent's planning step
+# Utility
 # ══════════════════════════════════════════════════════════════════════════════
-
 
 def retrieve_raw(
     question: str,
@@ -411,26 +428,27 @@ def retrieve_raw(
     use_reranking: bool = True,
 ) -> list[Document]:
     """
-    Convenience wrapper: build retriever and invoke it in one call.
+    Convenience wrapper: build retriever + invoke in one call.
 
-    Returns the raw retrieved documents WITHOUT confidence filtering.
-    Use this when you need to inspect scores or do your own filtering.
+    Returns raw retrieved documents WITHOUT confidence filtering.
+    Use when you need to inspect scores or handle filtering yourself.
 
-    For the standard query path, prefer calling build_retriever() directly
-    so you can control the retriever lifecycle.
+    For the standard query path use build_retriever() directly so you
+    control the retriever lifecycle.
 
     Args:
-        question:      The user's question to retrieve context for.
-        doc_ids:       Optional document scope.
-        use_reranking: Apply Cohere re-ranking.
+        question:      User question to retrieve context for.
+        doc_ids:       Optional scope to specific documents.
+        use_reranking: Apply FlashRank re-ranking (default True).
 
     Returns:
-        List of Documents sorted by relevance descending.
+        List[Document] sorted by relevance descending.
     """
     retriever = build_retriever(doc_ids=doc_ids, use_reranking=use_reranking)
     docs = retriever.invoke(question)
 
     logger.info(
-        f"[retrievers] retrieve_raw → {len(docs)} chunks " f"for question='{question[:60]}...'"
+        f"[retrievers] retrieve_raw → {len(docs)} chunks | "
+        f"question='{question[:60]}...'"
     )
     return docs
