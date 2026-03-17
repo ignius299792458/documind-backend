@@ -1,13 +1,21 @@
-# DocuMind Backend
+# "DocuMind" — Multi-format RAG with Smart Retrieval
 
-DocuMind Backend is an AI-powered document intelligence platform built with FastAPI and LangChain. It enables seamless ingestion, processing, and querying of various document formats including PDFs, DOCX, TXT, MD, and HTML files, as well as web URLs.
+## What it does:
 
-The system leverages advanced retrieval-augmented generation (RAG) techniques to transform uploaded documents into searchable knowledge bases. Key features include:
+A CLI + Streamlit web app where users upload PDFs, Word docs, or paste URLs. The system chunks, embeds, and indexes them. Users chat with their documents. Supports multiple documents simultaneously with source citation in every answer.
+What makes it non-trivial:
 
-- **Document Ingestion**: Automatic loading and parsing of multiple file types with metadata enrichment.
-- **Intelligent Splitting**: Content chunking optimized for context windows and semantic coherence.
-- **Vector Storage**: ChromaDB integration for efficient similarity search and retrieval.
-- **AI-Powered Queries**: OLLAMA models for natural language question-answering over document collections.
-- **Re-ranking**: Cohere integration for improved result relevance.
+## Implement EnsembleRetriever (BM25 + dense vector hybrid with RRF fusion)
 
-Designed for developers and organizations, DocuMind Backend provides RESTful APIs for document management, making it easy to integrate into existing workflows or build custom document intelligence applications.
+Add ContextualCompressionRetriever with a cross-encoder re-ranker
+Persist vector store to disk (ChromaDB) so documents survive restarts
+Show retrieved source chunks alongside every answer with relevance scores
+Add a confidence threshold — if top chunk score is below X, say "I don't know" instead of hallucinating
+
+## Tech stack:
+
+LangChain, ChromaDB, OpenAI embeddings, Streamlit, sentence-transformers (re-ranker)
+
+## GitHub showcase value:
+
+Demonstrates RAG fundamentals + retrieval engineering + honest uncertainty handling. Interviewers love the hybrid retrieval + re-ranking combo.

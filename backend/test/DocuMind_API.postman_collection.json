@@ -1,0 +1,1392 @@
+{
+  "info": {
+    "name": "DocuMind API",
+    "description": "Complete Postman collection for DocuMind \u2014 RAG-powered document intelligence backend.\n\nBase URL: http://localhost:8000\n\n**Endpoints:**\n- GET  /health\n- GET  /documents\n- GET  /documents/:doc_id\n- DELETE /documents/:doc_id\n- POST /ingest          (file upload)\n- POST /ingest/url      (web URL)\n- POST /query           (non-streaming RAG)\n- POST /query/stream    (SSE streaming \u2014 use Postman Runner or curl)\n- POST /query/batch     (up to 10 questions)\n- POST /agent/query     (LangGraph multi-step agent)\n\n**SSE Note:** Postman does not natively render SSE streams. The /query/stream request is included for completeness. Use curl or a browser EventSource to consume the stream:\n\n  curl -X POST http://localhost:8000/query/stream \\\n    -H 'Content-Type: application/json' \\\n    -d '{\"question\": \"What are the payment terms?\"}' \\\n    --no-buffer",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "documind-api-collection-v1"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string",
+      "description": "DocuMind backend base URL"
+    },
+    {
+      "key": "doc_id",
+      "value": "",
+      "type": "string",
+      "description": "Set this after a successful /ingest call. Copied automatically by the ingest request's test script."
+    },
+    {
+      "key": "session_id",
+      "value": "",
+      "type": "string",
+      "description": "Agent session ID for multi-turn conversations. Set automatically after first /agent/query call."
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "description": "Service health and readiness checks",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Health check endpoint. Returns 200 if FastAPI and ChromaDB are both reachable.\nReturns 503 if ChromaDB is unreachable.\n\nUsed by Docker HEALTHCHECK, load balancers, and uptime monitors."
+          },
+          "response": [
+            {
+              "name": "200 Healthy",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"status\": \"ok\",\n  \"version\": \"0.1.0\",\n  \"environment\": \"development\",\n  \"vector_store_chunk_count\": 1482\n}"
+            },
+            {
+              "name": "503 ChromaDB Unreachable",
+              "status": "Service Unavailable",
+              "code": 503,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"ChromaDB is unreachable: Connection refused\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Status field is ok', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql('ok');",
+                  "});",
+                  "pm.test('Has vector_store_chunk_count', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('vector_store_chunk_count');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Documents",
+      "description": "Document management \u2014 list, get, delete",
+      "item": [
+        {
+          "name": "GET /documents",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "documents"
+              ]
+            },
+            "description": "List all ingested documents currently stored in ChromaDB.\n\nScans chunk metadata and deduplicates by doc_id.\nEach entry includes doc_id, filename, file_type, page_count, chunk_count."
+          },
+          "response": [
+            {
+              "name": "200 \u2014 Document list",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"documents\": [\n    {\n      \"doc_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n      \"filename\": \"contract_terms.txt\",\n      \"file_type\": \"txt\",\n      \"file_size_bytes\": 0,\n      \"page_count\": 1,\n      \"status\": \"ready\",\n      \"chunk_count\": 14\n    },\n    {\n      \"doc_id\": \"b2c3d4e5-f6a7-8901-bcde-f12345678901\",\n      \"filename\": \"employee_handbook.docx\",\n      \"file_type\": \"docx\",\n      \"file_size_bytes\": 0,\n      \"page_count\": 8,\n      \"status\": \"ready\",\n      \"chunk_count\": 42\n    }\n  ],\n  \"total\": 2\n}"
+            },
+            {
+              "name": "200 \u2014 Empty collection",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"documents\": [],\n  \"total\": 0\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response has documents array', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('documents');",
+                  "    pm.expect(json.documents).to.be.an('array');",
+                  "});",
+                  "pm.test('Response has total count', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('total');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /documents/:doc_id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/documents/{{doc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "documents",
+                "{{doc_id}}"
+              ]
+            },
+            "description": "Get metadata and chunk count for a single document by its UUID.\n\nReturns 404 if the doc_id does not exist in ChromaDB.\n\n\u2192 Set the {{doc_id}} collection variable first (auto-set by /ingest test script)."
+          },
+          "response": [
+            {
+              "name": "200 \u2014 Document found",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"doc_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n  \"filename\": \"contract_terms.txt\",\n  \"file_type\": \"txt\",\n  \"file_size_bytes\": 0,\n  \"page_count\": 1,\n  \"status\": \"ready\",\n  \"chunk_count\": 14\n}"
+            },
+            {
+              "name": "404 \u2014 Not found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Document 'a1b2c3d4-...' not found. It may not have been ingested yet.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('doc_id matches variable', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.doc_id).to.eql(pm.collectionVariables.get('doc_id'));",
+                  "});",
+                  "pm.test('Has chunk_count > 0', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.chunk_count).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /documents/:doc_id",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/documents/{{doc_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "documents",
+                "{{doc_id}}"
+              ]
+            },
+            "description": "Permanently remove all chunks of a document from ChromaDB.\n\n\u26a0\ufe0f  This action cannot be undone. The document must be re-ingested to restore it.\n\nOnly vector store entries are removed \u2014 the original file on disk is NOT deleted.\n\nReturns 404 if the doc_id does not exist."
+          },
+          "response": [
+            {
+              "name": "200 \u2014 Deleted",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"doc_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n  \"chunks_deleted\": 14,\n  \"message\": \"Successfully deleted 14 chunks for document 'a1b2c3d4-...'\"\n}"
+            },
+            {
+              "name": "404 \u2014 Not found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Document 'a1b2c3d4-...' not found.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('chunks_deleted > 0', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.chunks_deleted).to.be.above(0);",
+                  "});",
+                  "// Clear the doc_id variable after deletion",
+                  "if (pm.response.code === 200) {",
+                  "    pm.collectionVariables.set('doc_id', '');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Ingest",
+      "description": "Document ingestion \u2014 file upload and URL",
+      "item": [
+        {
+          "name": "POST /ingest \u2014 .txt file",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "./test-data/contract_terms.txt",
+                  "description": "Select contract_terms.txt from ./test-data/"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest"
+              ]
+            },
+            "description": "Upload a plain text file (.txt) and ingest it into ChromaDB.\n\n**How to use:**\n1. Click 'Body' \u2192 'form-data'\n2. Set key = 'file', type = File\n3. Select test-data/contract_terms.txt\n4. Send \u2014 the doc_id is auto-saved to {{doc_id}} by the test script\n\nMax file size: 50MB (configurable via MAX_UPLOAD_SIZE_MB in .env)"
+          },
+          "response": [
+            {
+              "name": "201 \u2014 Ingested",
+              "status": "Created",
+              "code": 201,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"doc_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n  \"filename\": \"contract_terms.txt\",\n  \"status\": \"ready\",\n  \"message\": \"Successfully ingested 'contract_terms.txt'. 1 page(s) \u2192 14 chunk(s) stored in vector database.\"\n}"
+            },
+            {
+              "name": "400 \u2014 Unsupported file type",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"File type '.xlsx' is not supported. Allowed extensions: .docx, .html, .md, .pdf, .txt\"\n}"
+            },
+            {
+              "name": "413 \u2014 File too large",
+              "status": "Request Entity Too Large",
+              "code": 413,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"File size 75.2MB exceeds maximum allowed size of 50MB.\"\n}"
+            },
+            {
+              "name": "422 \u2014 Empty or unprocessable",
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Document produced zero chunks after splitting. The file may contain only images without extractable text.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('Status is ready', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.status).to.eql('ready');",
+                  "});",
+                  "pm.test('Has doc_id', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.doc_id).to.be.a('string').and.not.empty;",
+                  "    // Auto-save doc_id for downstream requests",
+                  "    pm.collectionVariables.set('doc_id', json.doc_id);",
+                  "    console.log('doc_id saved:', json.doc_id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest \u2014 .md file",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "./test-data/architecture_guide.md",
+                  "description": "Select architecture_guide.md from ./test-data/"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest"
+              ]
+            },
+            "description": "Upload a Markdown file (.md) and ingest it into ChromaDB.\n\nSelect test-data/architecture_guide.md"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "pm.test('Status ready', () => pm.expect(json.status).to.eql('ready'));",
+                  "pm.test('Has doc_id', () => pm.expect(json.doc_id).to.not.be.empty);",
+                  "pm.collectionVariables.set('doc_id', json.doc_id);",
+                  "console.log('MD doc_id saved:', json.doc_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest \u2014 .docx file",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "./test-data/employee_handbook.docx",
+                  "description": "Select employee_handbook.docx from ./test-data/"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest"
+              ]
+            },
+            "description": "Upload a Word document (.docx) and ingest it into ChromaDB.\n\nSelect test-data/employee_handbook.docx"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "pm.test('Status ready', () => pm.expect(json.status).to.eql('ready'));",
+                  "pm.test('Has doc_id', () => pm.expect(json.doc_id).to.not.be.empty);",
+                  "pm.collectionVariables.set('doc_id', json.doc_id);",
+                  "console.log('DOCX doc_id saved:', json.doc_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest \u2014 .pdf file",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "./test-data/product_manual.pdf",
+                  "description": "Select product_manual.pdf from ./test-data/"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest"
+              ]
+            },
+            "description": "Upload a PDF file and ingest it into ChromaDB.\n\nSelect test-data/product_manual.pdf"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "pm.test('Status ready', () => pm.expect(json.status).to.eql('ready'));",
+                  "pm.test('Has doc_id', () => pm.expect(json.doc_id).to.not.be.empty);",
+                  "pm.collectionVariables.set('doc_id', json.doc_id);",
+                  "console.log('PDF doc_id saved:', json.doc_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest/url \u2014 Web URL",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://en.wikipedia.org/wiki/Retrieval-augmented_generation\",\n  \"display_name\": \"Wikipedia \u2014 Retrieval-Augmented Generation\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest/url",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest",
+                "url"
+              ]
+            },
+            "description": "Fetch a public web page and ingest its text content into ChromaDB.\n\nThe URL must be publicly accessible.\ndisplay_name is optional \u2014 defaults to the URL if omitted.\n\nInternally uses LangChain WebBaseLoader to strip HTML and extract clean text."
+          },
+          "response": [
+            {
+              "name": "201 \u2014 URL ingested",
+              "status": "Created",
+              "code": 201,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"doc_id\": \"c3d4e5f6-a7b8-9012-cdef-123456789012\",\n  \"filename\": \"Wikipedia \u2014 Retrieval-Augmented Generation\",\n  \"status\": \"ready\",\n  \"message\": \"Successfully ingested 'Wikipedia \u2014 Retrieval-Augmented Generation'. 3 section(s) \u2192 28 chunk(s) stored.\"\n}"
+            },
+            {
+              "name": "422 \u2014 Unreachable URL",
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Failed to ingest URL 'https://...': Connection refused\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "pm.test('Status ready', () => pm.expect(json.status).to.eql('ready'));",
+                  "pm.test('Has doc_id', () => pm.expect(json.doc_id).to.not.be.empty);",
+                  "pm.collectionVariables.set('doc_id', json.doc_id);",
+                  "console.log('URL doc_id saved:', json.doc_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest \u2014 unsupported file type (400)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "./test-data/sample.xlsx",
+                  "description": "Any unsupported file type e.g. .xlsx, .csv, .zip"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest"
+              ]
+            },
+            "description": "Negative test \u2014 upload a file with an unsupported extension.\n\nExpected: HTTP 400 with detail listing allowed extensions.\nAllowed: .pdf  .docx  .txt  .md  .html"
+          },
+          "response": [
+            {
+              "name": "400 \u2014 Unsupported extension",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"File type '.xlsx' is not supported. Allowed extensions: .docx, .html, .md, .pdf, .txt\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Detail mentions allowed extensions', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.detail).to.include('not supported');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest \u2014 empty file (400)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "./test-data/empty.txt",
+                  "description": "A zero-byte .txt file \u2014 create with: touch test-data/empty.txt"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest"
+              ]
+            },
+            "description": "Negative test \u2014 upload a 0-byte file.\n\nCreate test file: touch test-data/empty.txt\n\nExpected: HTTP 400 with 'empty (0 bytes)' detail."
+          },
+          "response": [
+            {
+              "name": "400 \u2014 Empty file",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Uploaded file 'empty.txt' is empty (0 bytes).\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('Detail mentions 0 bytes', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.detail).to.include('empty');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest/url \u2014 bad/unreachable URL (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://this-domain-does-not-exist-xyz.example.com/page\",\n  \"display_name\": \"Broken URL test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest/url",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest",
+                "url"
+              ]
+            },
+            "description": "Negative test \u2014 submit a URL that cannot be fetched.\n\nExpected: HTTP 422 with detail explaining the fetch failure.\n\nAlso covers: private IPs, localhost URLs, auth-gated pages."
+          },
+          "response": [
+            {
+              "name": "422 \u2014 Unreachable URL",
+              "status": "Unprocessable Entity",
+              "code": 422,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Failed to ingest URL 'https://this-domain-does-not-exist-xyz.example.com/page': Name or service not known\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('Detail mentions failed ingest', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.detail).to.include('Failed to ingest URL');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest/url \u2014 no display_name (optional field)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://en.wikipedia.org/wiki/Large_language_model\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest/url",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest",
+                "url"
+              ]
+            },
+            "description": "Ingest a URL without the optional display_name field.\n\ndisplay_name defaults to the URL string when omitted.\n\nVerifies the field is truly optional and the server does not return a 422 validation error."
+          },
+          "response": [
+            {
+              "name": "201 \u2014 Ingested, filename = URL",
+              "status": "Created",
+              "code": 201,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"doc_id\": \"e5f6a7b8-c9d0-1234-ef01-234567890abc\",\n  \"filename\": \"https://en.wikipedia.org/wiki/Large_language_model\",\n  \"status\": \"ready\",\n  \"message\": \"Successfully ingested 'https://en.wikipedia.org/wiki/Large_language_model'. 4 section(s) \\u2192 35 chunk(s) stored.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('filename defaults to URL', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.filename).to.include('wikipedia.org');",
+                  "});",
+                  "pm.test('status is ready', () => {",
+                  "    pm.expect(pm.response.json().status).to.eql('ready');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /ingest \u2014 .html file",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "./test-data/sample.html",
+                  "description": "An HTML file \u2014 create a minimal one in test-data/ if needed"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ingest",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "ingest"
+              ]
+            },
+            "description": "Upload an HTML file (.html) \u2014 one of the supported extensions alongside .pdf, .docx, .txt, .md.\n\nCreate a test file:\n  echo '<html><body><h1>Test</h1><p>Sample HTML content for DocuMind.</p></body></html>' > test-data/sample.html"
+          },
+          "response": [
+            {
+              "name": "201 \u2014 HTML ingested",
+              "status": "Created",
+              "code": 201,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"doc_id\": \"f6a7b8c9-d0e1-2345-f012-345678901bcd\",\n  \"filename\": \"sample.html\",\n  \"status\": \"ready\",\n  \"message\": \"Successfully ingested 'sample.html'. 1 page(s) \\u2192 3 chunk(s) stored in vector database.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201));",
+                  "const json = pm.response.json();",
+                  "pm.test('Status ready', () => pm.expect(json.status).to.eql('ready'));",
+                  "pm.test('Has doc_id', () => pm.expect(json.doc_id).to.not.be.empty);",
+                  "pm.collectionVariables.set('doc_id', json.doc_id);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Query",
+      "description": "Document querying \u2014 non-streaming, streaming SSE, batch, and agent",
+      "item": [
+        {
+          "name": "POST /query \u2014 non-streaming RAG",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What are the payment terms and due dates?\",\n  \"doc_ids\": [\"{{doc_id}}\"],\n  \"top_k\": 5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/query",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "query"
+              ]
+            },
+            "description": "Run a RAG query and return the complete answer in one response.\n\n**Fields:**\n- `question` (required): Natural language question\n- `doc_ids` (optional): Array of UUIDs to scope the query. Omit to search all documents.\n- `top_k` (optional): Number of chunks to retrieve before re-ranking. Default: 10\n\n**Response fields:**\n- `answer`: Full answer string from llama3.2\n- `sources`: Array of SourceChunk citations (filename, page, excerpt, score)\n- `has_relevant_context`: false = nothing found, llama3.2 returned 'I don't know'"
+          },
+          "response": [
+            {
+              "name": "200 \u2014 Answer with context",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"answer\": \"The payment terms require all invoices to be paid within NET 30 days of the invoice date. Late payments incur a penalty of 1.5% per month on outstanding balances. Payment must be made via bank transfer.\",\n  \"sources\": [\n    {\n      \"doc_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n      \"filename\": \"contract_terms.txt\",\n      \"page\": 1,\n      \"chunk_index\": 2,\n      \"content\": \"All invoices are due within NET 30 days of the invoice date. Late payments will incur a penalty of 1.5% per month...\",\n      \"relevance_score\": 0.94\n    }\n  ],\n  \"has_relevant_context\": true\n}"
+            },
+            {
+              "name": "200 \u2014 No context found",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"answer\": \"I don't have enough information in the provided documents to answer this question.\",\n  \"sources\": [],\n  \"has_relevant_context\": false\n}"
+            },
+            {
+              "name": "500 \u2014 LLM or retrieval failure",
+              "status": "Internal Server Error",
+              "code": 500,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Query failed: Connection to Ollama refused. Is Ollama running?\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has answer string', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.answer).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('Has sources array', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.sources).to.be.an('array');",
+                  "});",
+                  "pm.test('Has has_relevant_context boolean', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.has_relevant_context).to.be.a('boolean');",
+                  "});",
+                  "// Warn if no context found",
+                  "const json = pm.response.json();",
+                  "if (!json.has_relevant_context) {",
+                  "    console.warn('has_relevant_context=false \u2014 check doc_id or question relevance');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /query \u2014 cross-document (no doc_id filter)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What are the payment terms in the service contract?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/query",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "query"
+              ]
+            },
+            "description": "Query across ALL ingested documents (no doc_ids filter).\n\nOmitting doc_ids searches the entire ChromaDB collection.\nUseful for cross-document questions or when you don't know which document contains the answer."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has answer', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.answer).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /query \u2014 expect no context (out-of-scope question)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What is the weather forecast for tomorrow in Kathmandu?\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/query",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "query"
+              ]
+            },
+            "description": "Anti-hallucination test \u2014 asks a question that has no relevant answer in any ingested document.\n\nExpected: has_relevant_context = false\nExpected: answer = 'I don't know' or similar refusal\n\nThis verifies the confidence filtering layer is working correctly."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('has_relevant_context is false (anti-hallucination)', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.has_relevant_context).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /query/stream \u2014 SSE streaming \u26a0\ufe0f",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              },
+              {
+                "key": "Cache-Control",
+                "value": "no-cache"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What are the payment terms and due dates?\",\n  \"doc_ids\": [\"{{doc_id}}\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/query/stream",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "query",
+                "stream"
+              ]
+            },
+            "description": "\u26a0\ufe0f  SSE STREAMING \u2014 IMPORTANT NOTES FOR POSTMAN USERS:\n\nPostman does not render SSE streams in real time. The response will only appear after the full stream completes (or times out). This is a Postman limitation, not a bug in DocuMind.\n\n**To properly test SSE streaming, use one of these instead:**\n\n1. curl (recommended):\n   curl -X POST http://localhost:8000/query/stream \\\n     -H 'Content-Type: application/json' \\\n     -H 'Accept: text/event-stream' \\\n     -d '{\"question\": \"What are the payment terms?\", \"doc_ids\": [\"<doc_id>\"]}' \\\n     --no-buffer\n\n2. Browser console (JavaScript):\n   const res = await fetch('http://localhost:8000/query/stream', {\n     method: 'POST',\n     headers: {'Content-Type': 'application/json'},\n     body: JSON.stringify({question: 'What are the payment terms?'})\n   });\n   const reader = res.body.getReader();\n   const decoder = new TextDecoder();\n   while (true) {\n     const {done, value} = await reader.read();\n     if (done) break;\n     const chunk = decoder.decode(value);\n     // Each chunk: 'data: <token>\\n\\n'\n     const token = chunk.replace(/^data: /, '').replace(/\\n\\n$/, '');\n     if (token !== '[DONE]') console.log(token);\n   }\n\n**SSE format:**\n  Each token:  data: <token>\\n\\n\n  Stream end:  data: [DONE]\\n\\n\n  On error:    event: error\\ndata: {\"error\": \"...\"}\\n\\n"
+          },
+          "response": [
+            {
+              "name": "200 \u2014 SSE token stream",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "text/event-stream"
+                },
+                {
+                  "key": "Cache-Control",
+                  "value": "no-cache"
+                },
+                {
+                  "key": "X-Accel-Buffering",
+                  "value": "no"
+                },
+                {
+                  "key": "Connection",
+                  "value": "keep-alive"
+                }
+              ],
+              "body": "data: The\n\ndata:  payment\n\ndata:  terms\n\ndata:  require\n\ndata:  NET\n\ndata:  30\n\ndata:  days.\n\ndata: [DONE]\n\n"
+            },
+            {
+              "name": "200 \u2014 SSE error event",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "text/event-stream"
+                }
+              ],
+              "body": "event: error\ndata: {\"error\": \"Connection to Ollama refused\"}\n\ndata: [DONE]\n\n"
+            }
+          ]
+        },
+        {
+          "name": "POST /query/batch \u2014 multiple questions",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"questions\": [\n    \"What are the payment terms?\",\n    \"How many days notice is required for termination?\",\n    \"How long does the confidentiality obligation last?\"\n  ],\n  \"doc_ids\": [\"{{doc_id}}\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/query/batch",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "query",
+                "batch"
+              ]
+            },
+            "description": "Submit up to 10 questions in a single request.\n\nQuestions are processed sequentially (not in parallel) to avoid overwhelming local Ollama.\n\n**Fields:**\n- `questions` (required): Array of 1\u201310 question strings\n- `doc_ids` (optional): Scope all questions to specific documents\n\nReturns results in the same order as the input questions.\nIf one question fails, the others still complete \u2014 a per-question error is returned in place of the answer."
+          },
+          "response": [
+            {
+              "name": "200 \u2014 Batch results",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"results\": [\n    {\n      \"answer\": \"Invoices are due within NET 30 days.\",\n      \"sources\": [{\"filename\": \"contract_terms.txt\", \"page\": 1, \"relevance_score\": 0.94, \"content\": \"...\"}],\n      \"has_relevant_context\": true\n    },\n    {\n      \"answer\": \"Either party may terminate with 30 days written notice.\",\n      \"sources\": [{\"filename\": \"contract_terms.txt\", \"page\": 1, \"relevance_score\": 0.91, \"content\": \"...\"}],\n      \"has_relevant_context\": true\n    },\n    {\n      \"answer\": \"Confidentiality obligations survive for 3 years after termination.\",\n      \"sources\": [{\"filename\": \"contract_terms.txt\", \"page\": 1, \"relevance_score\": 0.89, \"content\": \"...\"}],\n      \"has_relevant_context\": true\n    }\n  ],\n  \"total\": 3\n}"
+            },
+            {
+              "name": "400 \u2014 Too many questions",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Batch queries are limited to 10 questions per request.\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('results array matches question count', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.results).to.be.an('array').with.lengthOf(3);",
+                  "    pm.expect(json.total).to.eql(3);",
+                  "});",
+                  "pm.test('Each result has answer and sources', () => {",
+                  "    const json = pm.response.json();",
+                  "    json.results.forEach((r, i) => {",
+                  "        pm.expect(r.answer, `result[${i}].answer`).to.be.a('string');",
+                  "        pm.expect(r.sources, `result[${i}].sources`).to.be.an('array');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /agent/query \u2014 LangGraph multi-step",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"Compare the termination clause and the confidentiality clause \u2014 what are the key differences in duration and consequences?\",\n  \"doc_ids\": [\"{{doc_id}}\"],\n  \"session_id\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/agent/query",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "query"
+              ]
+            },
+            "description": "Run the LangGraph multi-step agent for complex questions requiring multiple retrieval passes.\n\n**When to use agent vs /query:**\n\u2705 Use /agent/query for:\n  - Comparisons across sections ('Compare section 3 and section 7')\n  - Multi-hop reasoning ('What clauses relate to payment AND termination?')\n  - Cross-document synthesis\n\n\u2713 Use /query for:\n  - Single-fact lookups ('What is the payment due date?')\n  - Simple retrieval (faster, cheaper)\n\n**Fields:**\n- `question` (required): Complex natural language question\n- `doc_ids` (optional): Scope retrieval to specific documents\n- `session_id` (optional): Pass previous session_id to maintain conversation context\n\n**Agent flow:**\n  classify \u2192 [plan] \u2192 retrieve (\u00d71\u20134) \u2192 reason \u2192 respond\n\n\u26a0\ufe0f  Slower than /query \u2014 expect 10\u201330s for complex multi-step questions."
+          },
+          "response": [
+            {
+              "name": "200 \u2014 Multi-step answer",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"answer\": \"The termination clause allows either party to exit with 30 days notice, with immediate effect in cases of material breach. The confidentiality clause, by contrast, has a much longer duration \u2014 it survives termination for 3 years and carries a financial penalty of up to $50,000 for violations. The key difference is that termination is a one-time event while confidentiality is an ongoing obligation.\",\n  \"session_id\": \"d4e5f6a7-b8c9-0123-def0-123456789abc\",\n  \"steps_taken\": 2,\n  \"sources\": [\n    {\n      \"doc_id\": \"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\n      \"filename\": \"contract_terms.txt\",\n      \"page\": 1,\n      \"chunk_index\": 3,\n      \"content\": \"Either party may terminate this agreement with 30 days written notice...\",\n      \"relevance_score\": 0.96\n    }\n  ],\n  \"has_relevant_context\": true\n}"
+            },
+            {
+              "name": "500 \u2014 Agent failure",
+              "status": "Internal Server Error",
+              "code": 500,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Agent query failed: LLM call timed out after 30s\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Has answer', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.answer).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('Has session_id', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.session_id).to.be.a('string').and.not.empty;",
+                  "    // Save session_id for follow-up turns",
+                  "    pm.collectionVariables.set('session_id', json.session_id);",
+                  "    console.log('session_id saved:', json.session_id);",
+                  "});",
+                  "pm.test('steps_taken >= 1', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.steps_taken).to.be.at.least(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /agent/query \u2014 follow-up turn (uses session_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What is the financial penalty for violating the clause you just described?\",\n  \"doc_ids\": [\"{{doc_id}}\"],\n  \"session_id\": \"{{session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/agent/query",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "agent",
+                "query"
+              ]
+            },
+            "description": "Follow-up agent query in the same conversation session.\n\nPasses {{session_id}} (auto-set by the previous agent/query request) to continue the conversation with memory of previous turns.\n\nThe MemorySaver checkpointer in LangGraph uses thread_id (= session_id) to load the previous graph state."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Same session_id returned', () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.session_id).to.eql(pm.collectionVariables.get('session_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

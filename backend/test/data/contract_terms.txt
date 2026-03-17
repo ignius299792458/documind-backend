@@ -1,0 +1,60 @@
+SERVICE AGREEMENT — ACME CORP & TECHFLOW LTD
+============================================
+Document Type  : Service Contract
+Reference No   : ACM-TF-2024-0042
+Effective Date : January 1, 2024
+Expiry Date    : December 31, 2025
+
+--------------------------------------------
+1. PAYMENT TERMS
+--------------------------------------------
+1.1  All invoices are due within NET 30 days of the invoice date.
+1.2  Late payments will incur a penalty of 1.5% per month on outstanding balances.
+1.3  Payments must be made via bank transfer to the following account:
+       Bank     : First National Bank
+       Account  : 00-1234-5678-90
+       SWIFT    : FNB12345
+
+--------------------------------------------
+2. SCOPE OF SERVICES
+--------------------------------------------
+2.1  TechFlow Ltd agrees to provide software development services including:
+       - Backend API development using Python and FastAPI
+       - Database design and optimization (PostgreSQL)
+       - Cloud infrastructure setup on AWS
+       - 24/7 system monitoring and alerting
+
+2.2  Deliverables must be submitted by the 15th of each calendar month.
+2.3  All source code will be delivered via the agreed GitHub repository.
+
+--------------------------------------------
+3. TERMINATION CLAUSE
+--------------------------------------------
+3.1  Either party may terminate this agreement with 30 days written notice.
+3.2  Immediate termination is permitted in cases of material breach.
+3.3  Upon termination, all unpaid invoices become immediately due.
+
+--------------------------------------------
+4. CONFIDENTIALITY
+--------------------------------------------
+4.1  Both parties agree to keep all technical and commercial information confidential.
+4.2  Confidentiality obligations survive termination for a period of 3 years.
+4.3  Violation of confidentiality may result in damages of up to $50,000 USD.
+
+--------------------------------------------
+5. LIABILITY
+--------------------------------------------
+5.1  Maximum liability is capped at the total contract value of $120,000 USD.
+5.2  Neither party is liable for indirect or consequential damages.
+
+--------------------------------------------
+6. GOVERNING LAW
+--------------------------------------------
+6.1  This agreement is governed by the laws of the State of California, USA.
+6.2  Disputes shall be resolved by binding arbitration in San Francisco, CA.
+
+--------------------------------------------
+SIGNATORIES
+--------------------------------------------
+Acme Corp        : Jane Doe, CEO         — Date: 2024-01-01
+TechFlow Ltd     : John Smith, Director  — Date: 2024-01-01

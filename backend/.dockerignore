@@ -1,0 +1,45 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+test/
+htmlcov/
+.coverage
+coverage.xml
+
+# Uploads (mounted as a volume, not baked into image)
+uploads/
+
+# Docker-in-Docker (don't send compose into the build context)
+docker-compose.yml
+docker/
+
+# Docs / non-runtime files
+*.md
+*.excalidraw
+architecture_diagram.excalidraw
+
+# Environment files (secrets must not be baked into images)
+.env
+.env.*
